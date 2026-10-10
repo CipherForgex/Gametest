@@ -1,7 +1,8 @@
 
-# MARBLE ATELIER — ANDROID APK BUILD
-# Upload MARBLE_ATELIER_GAME.zip to the GitHub repository root.
-# No need to extract the ZIP manually.
+# MARBLE ATELIER V0.4.1
+# Phone-only GitHub APK builder
+# Upload MARBLE_ATELIER_GAME.zip to repository root.
+# Do not extract manually.
 
 name: Build Marble Atelier APK
 
@@ -18,45 +19,51 @@ permissions:
 
 jobs:
   build:
-    name: Unzip, test and build Android APK
+    name: Extract, test and build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
 
     steps:
-      - name: Checkout files
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check ZIP and extract Android project
+      - name: Validate and extract game ZIP
         shell: bash
         run: |
           set -euo pipefail
+
           python3 - <<'PYCODE'
           from pathlib import Path
-          import zipfile
           import stat
+          import zipfile
 
-          path = Path('MARBLE_ATELIER_GAME.zip')
+          src = Path('MARBLE_ATELIER_GAME.zip')
 
-          assert path.is_file(), \
-              'Missing MARBLE_ATELIER_GAME.zip in repository root'
+          assert src.is_file(), \
+              'MARBLE_ATELIER_GAME.zip missing from repository root'
 
-          with zipfile.ZipFile(path) as z:
-              assert z.testzip() is None, 'ZIP checksum failure'
+          with zipfile.ZipFile(src) as z:
+              assert z.testzip() is None, 'Corrupt game ZIP'
 
               for item in z.infolist():
                   p = Path(item.filename)
+
                   assert not p.is_absolute() and '..' not in p.parts, \
-                      'Unsafe ZIP entry: ' + item.filename
+                      'Unsafe ZIP path'
+
                   assert not stat.S_ISLNK(item.external_attr >> 16), \
-                      'ZIP must not contain symlinks'
+                      'Symlink not permitted'
 
               z.extractall('android-project')
 
-          expected = Path('android-project/app/build.gradle')
-          assert expected.is_file(), \
-              'ZIP has incorrect folder structure'
+          assert Path('android-project/app/build.gradle').is_file(), \
+              'Incorrect ZIP root structure'
 
-          print('PASS: Project ZIP extracted successfully')
+          assert Path(
+              'android-project/tools/test_filament_startup.py'
+          ).is_file(), 'Missing JNI startup test'
+
+          print('PASS: Android source extracted')
           PYCODE
 
       - name: Set up Java 17
@@ -75,19 +82,26 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Check project files
+      - name: Test Filament native startup order
+        working-directory: android-project
+        run: python3 tools/test_filament_startup.py
+
+      - name: Audit source files and textures
         working-directory: android-project
         run: python3 tools/check_project.py
 
-      - name: Test game physics
+      - name: Test all ten maze models
         working-directory: android-project
         run: bash tools/test_physics.sh
 
-      - name: Compile Android debug APK
+      - name: Compile Android APK
         working-directory: android-project
-        run: gradle --no-daemon --stacktrace :app:assembleDebug
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee gradle-build.log
 
-      - name: Verify APK and signature
+      - name: Verify native libraries and APK signature
         shell: bash
         run: |
           set -euo pipefail
@@ -95,22 +109,26 @@ jobs:
           APK='android-project/app/build/outputs/apk/debug/app-debug.apk'
 
           test -s "$APK" || {
-            echo 'ERROR: APK missing or empty'
+            echo 'APK missing or empty'
             exit 1
           }
 
           unzip -tq "$APK"
-          unzip -Z1 "$APK" > /tmp/marble-apk-entries.txt
 
-          grep -x 'lib/arm64-v8a/libfilament-jni.so' \
-            /tmp/marble-apk-entries.txt
+          unzip -Z1 "$APK" > /tmp/marble-apk-files.txt
 
-          "${ANDROID_HOME}/build-tools/36.0.0/apksigner" \
+          grep -qx 'lib/arm64-v8a/libfilament-jni.so' \
+            /tmp/marble-apk-files.txt
+
+          grep -qx 'lib/arm64-v8a/libfilamat-jni.so' \
+            /tmp/marble-apk-files.txt
+
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
             verify --verbose "$APK"
 
-          echo "APK verified successfully"
+          echo 'PASS: APK verified'
 
-      - name: Upload installable APK
+      - name: Upload test APK
         uses: actions/upload-artifact@v4
         with:
           name: MARBLE_ATELIER_INSTALL_APK
@@ -122,8 +140,9 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_BUILD_REPORTS
+          name: MARBLE_ATELIER_FAILURE_DIAGNOSTICS
           path: |
+            android-project/gradle-build.log
             android-project/app/build/reports/
             android-project/app/build/outputs/logs/
           if-no-files-found: ignore
