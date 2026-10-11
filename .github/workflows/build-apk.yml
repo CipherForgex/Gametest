@@ -1,4 +1,5 @@
-name: Build Marble Atelier V0.6.0 APK
+
+name: Build Marble Atelier V0.9.4 APK
 
 on:
   workflow_dispatch:
@@ -32,34 +33,35 @@ jobs:
           import stat
 
           game = next(
-              (
-                  p for p in (
-                      Path('MARBLE_ATELIER_V060_STUDIO.zip'),
-                      Path('MARBLE_ATELIER_GAME.zip')
-                  )
-                  if p.is_file()
-              ),
+              (p for p in (
+                  Path('MARBLE_ATELIER_V060_STUDIO.zip'),
+                  Path('MARBLE_ATELIER_GAME.zip')
+              ) if p.is_file()),
               None
           )
 
-          assert game is not None, 'Missing source ZIP in repository root'
+          assert game is not None, 'Missing source ZIP'
 
           with ZipFile(game) as z:
-              assert z.testzip() is None, 'Game ZIP is corrupt'
+              assert z.testzip() is None, 'Game ZIP corrupt'
 
               for item in z.infolist():
                   p = Path(item.filename)
-                  assert not p.is_absolute() and '..' not in p.parts, 'Unsafe ZIP path'
-                  assert not stat.S_ISLNK(item.external_attr >> 16), 'Symlinks not supported'
+                  assert not p.is_absolute()
+                  assert '..' not in p.parts
+                  assert not stat.S_ISLNK(
+                      item.external_attr >> 16
+                  )
 
               z.extractall('android-project')
 
           root = Path('android-project')
-          assert (root / 'app/build.gradle').is_file(), 'ZIP must contain project at root'
-          assert (root / 'tools/test_visual_upgrade.py').is_file(), 'Missing visual regression tests'
-          assert (root / 'handover/QA_REPORT.md').is_file(), 'Missing sprint documentation'
 
-          print('PASS: ZIP extracted to android-project/')
+          assert (root/'app/build.gradle').is_file()
+          assert (root/'tools/test_visual_upgrade.py').is_file()
+          assert (root/'handover/QA_REPORT.md').is_file()
+
+          print('PASS: Project extracted')
           PYCODE
 
       - name: Install Java 17
@@ -78,24 +80,26 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Check source assets and Filament startup order
+      - name: Check project and Filament startup
         working-directory: android-project
         run: python3 tools/check_project.py
 
-      - name: Test all ten levels and collision rules
+      - name: Test all twenty levels and physics
         working-directory: android-project
         run: bash tools/test_physics.sh
 
-      - name: Test Graphics Lab feature switches
+      - name: Test graphics settings
         working-directory: android-project
         run: bash tools/test_graphics.sh
 
-      - name: Check studio scene, textures and rolling
+      - name: Test visuals, harbour and controls
         working-directory: android-project
         run: |
           python3 tools/test_visual_upgrade.py
           python3 tools/test_vnext_contracts.py
+          python3 tools/test_harbour_v093.py
           bash tools/test_rolling.sh
+          bash tools/test_keyboard.sh
 
       - name: Compile Android debug APK
         working-directory: android-project
@@ -104,7 +108,7 @@ jobs:
           set -o pipefail
           gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee gradle-build.log
 
-      - name: Verify APK and native Filament libraries
+      - name: Verify APK and Filament libraries
         shell: bash
         run: |
           set -euo pipefail
@@ -112,33 +116,40 @@ jobs:
           APK='android-project/app/build/outputs/apk/debug/app-debug.apk'
 
           test -s "$APK" || {
-            echo 'ERROR: APK missing or empty'
+            echo 'ERROR: APK missing'
             exit 1
           }
 
           unzip -tq "$APK"
-          unzip -Z1 "$APK" > /tmp/marble-apk-entries.txt
 
-          grep -qx 'lib/arm64-v8a/libfilament-jni.so' /tmp/marble-apk-entries.txt
-          grep -qx 'lib/arm64-v8a/libfilamat-jni.so' /tmp/marble-apk-entries.txt
+          unzip -Z1 "$APK" > /tmp/apk-entries.txt
 
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+          grep -qx \
+            'lib/arm64-v8a/libfilament-jni.so' \
+            /tmp/apk-entries.txt
 
-          echo 'PASS: Signed Android debug APK verified'
+          grep -qx \
+            'lib/arm64-v8a/libfilamat-jni.so' \
+            /tmp/apk-entries.txt
 
-      - name: Upload APK for your Samsung
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+            verify --verbose "$APK"
+
+          echo 'PASS: APK verified'
+
+      - name: Upload APK for Samsung
         uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_V060_INSTALL_APK
+          name: MARBLE_ATELIER_V094_INSTALL_APK
           path: android-project/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload QA and failure diagnostics
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_V060_BUILD_LOGS
+          name: MARBLE_ATELIER_V094_BUILD_LOGS
           path: |
             android-project/gradle-build.log
             android-project/handover/QA_REPORT.md
@@ -147,3 +158,4 @@ jobs:
             android-project/app/build/outputs/logs/
           if-no-files-found: warn
           retention-days: 14
+          
