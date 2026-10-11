@@ -1,5 +1,5 @@
 
-name: Marble Atelier v0.9.4 - Smart APK Build
+name: Marble Atelier v0.9.5 - BlueStacks APK
 
 on:
   workflow_dispatch:
@@ -11,9 +11,8 @@ permissions:
 
 jobs:
   build:
-    name: Find source, test, build APK
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 55
 
     steps:
       - name: Checkout repository
@@ -21,248 +20,213 @@ jobs:
         with:
           lfs: true
 
-      - name: Locate the Marble Atelier source automatically
+      - name: Find and extract v0.9.5 source
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path, PurePosixPath
           from zipfile import ZipFile, BadZipFile
-          import re
           import shutil
           import stat
           import sys
 
-          repo = Path.cwd()
-          output = repo / 'android-project'
+          root = Path.cwd()
+          dest = root / "android-project"
 
-          def is_v094(build_text):
-              return (re.search(r'versionName\s+[\'"]0\.9\.4[\'"]', build_text)
-                      and re.search(r'versionCode\s+18\b', build_text))
+          def correct_version(text):
+              return (
+                  "versionName '0.9.5'" in text
+                  and "versionCode 19" in text
+              )
 
-          # Accept an already-extracted Android project.
-          projects = sorted(
-              repo.rglob('settings.gradle'),
-              key=lambda p: len(p.parts)
-          )
+          def is_project(folder):
+              gradle = folder / "app/build.gradle"
+              return (
+                  (folder / "settings.gradle").is_file()
+                  and gradle.is_file()
+                  and correct_version(
+                      gradle.read_text(errors="replace")
+                  )
+              )
 
-          for settings in projects:
-              folder = settings.parent
+          project = None
 
-              if '.git' in folder.parts or 'android-project' in folder.parts:
+          for gradle in root.rglob("app/build.gradle"):
+              if ".git" in gradle.parts:
+                  continue
+              if "android-project" in gradle.parts:
                   continue
 
-              gradle_file = folder / 'app/build.gradle'
-              keyboard_file = (
-                  folder /
-                  'app/src/main/java/com/atelier/marble/KeyboardSteering.java'
-              )
+              candidate = gradle.parent.parent
 
-              if (gradle_file.is_file()
-                      and keyboard_file.is_file()
-                      and is_v094(
-                          gradle_file.read_text(errors='replace')
-                      )):
-                  if folder != output:
-                      shutil.copytree(
-                          folder,
-                          output,
-                          ignore=shutil.ignore_patterns(
-                              '.git', '.gradle', 'build'
-                          )
-                      )
-
-                  print(
-                      f'FOUND v0.9.4 source directory: '
-                      f'{folder.relative_to(repo) or "."}'
-                  )
+              if is_project(candidate):
+                  project = candidate
                   break
 
+          if project:
+              shutil.copytree(
+                  project,
+                  dest,
+                  ignore=shutil.ignore_patterns(
+                      ".git",
+                      ".gradle",
+                      "build",
+                      "android-project"
+                  )
+              )
+              print("Found extracted Android project")
+
           else:
-              # Find ZIP files with any name, in any folder.
-              archives = sorted(
-                  (
-                      p for p in repo.rglob('*')
-                      if p.is_file()
-                      and p.suffix.lower() == '.zip'
-                      and '.git' not in p.parts
-                      and 'android-project' not in p.parts
-                  ),
-                  key=lambda p: p.as_posix().lower()
-              )
-
-              print(
-                  'ZIP files found:',
-                  [str(p.relative_to(repo)) for p in archives]
-              )
-
               selected = None
 
-              for archive in archives:
+              for archive in sorted(root.rglob("*.zip")):
+                  if ".git" in archive.parts:
+                      continue
+
                   try:
                       with ZipFile(archive) as z:
                           names = set(z.namelist())
 
-                          for name in sorted(names, key=len):
-                              if not name.endswith('settings.gradle'):
+                          for name in names:
+                              if not name.endswith(
+                                  "app/build.gradle"
+                              ):
                                   continue
 
-                              prefix = name[:-len('settings.gradle')]
-                              gradle = prefix + 'app/build.gradle'
-                              keyboard = (
-                                  prefix +
-                                  'app/src/main/java/com/atelier/marble/KeyboardSteering.java'
-                              )
+                              prefix = name[:-len(
+                                  "app/build.gradle"
+                              )]
 
                               if (
-                                  gradle in names
-                                  and keyboard in names
-                                  and is_v094(
-                                      z.read(gradle).decode(
-                                          'utf-8', 'replace'
-                                      )
-                                  )
+                                  prefix + "settings.gradle"
+                                  not in names
                               ):
+                                  continue
+
+                              text = z.read(name).decode(
+                                  "utf-8", "replace"
+                              )
+
+                              if correct_version(text):
                                   selected = (archive, prefix)
                                   break
 
                   except (
                       BadZipFile,
                       OSError,
-                      KeyError,
-                      ValueError
-                  ) as err:
-                      print(
-                          f'Skipping invalid ZIP {archive}: {err}'
-                      )
+                      ValueError,
+                      KeyError
+                  ):
+                      continue
 
                   if selected:
                       break
 
               if selected is None:
-                  print(
-                      '::error::No Marble Atelier v0.9.4 '
-                      '(build 18) source found.'
+                  sys.exit(
+                      "ERROR: Marble Atelier v0.9.5 "
+                      "source ZIP is missing from GitHub. "
+                      "Upload the latest source ZIP or "
+                      "commit the extracted game project."
                   )
-                  print(
-                      'Upload the v0.9.4 Android source ZIP '
-                      'to this GitHub repository.'
-                  )
-                  print(
-                      'Any ZIP name or folder is supported.'
-                  )
-                  print(
-                      'You can also commit the extracted '
-                      'Android project files.'
-                  )
-                  print(
-                      'A workflow cannot compile an APK '
-                      'without the actual project source.'
-                  )
-                  sys.exit(1)
 
               archive, prefix = selected
-
-              print(
-                  f'FOUND source ZIP: '
-                  f'{archive.relative_to(repo)}'
-              )
+              print("Using ZIP:", archive)
 
               with ZipFile(archive) as z:
-                  assert z.testzip() is None, (
-                      'Source ZIP has a corrupt member'
-                  )
+                  if z.testzip() is not None:
+                      sys.exit("ERROR: Corrupt ZIP")
 
                   for info in z.infolist():
                       name = info.filename
-                      p = PurePosixPath(name)
+                      path = PurePosixPath(name)
 
                       if (
-                          p.is_absolute()
-                          or '..' in p.parts
-                          or '\\' in name
-                          or ':' in name
+                          path.is_absolute()
+                          or ".." in path.parts
+                          or "\\" in name
+                          or ":" in name
+                          or stat.S_ISLNK(
+                              info.external_attr >> 16
+                          )
                       ):
-                          raise ValueError(
-                              f'Unsafe path in archive: {name}'
+                          sys.exit(
+                              "ERROR: Unsafe ZIP member "
+                              + name
                           )
 
-                      if stat.S_ISLNK(
-                          info.external_attr >> 16
-                      ):
-                          raise ValueError(
-                              f'Symlink not supported: {name}'
-                          )
-
-                  output.mkdir(exist_ok=False)
+                  dest.mkdir()
 
                   for info in z.infolist():
-                      if not info.filename.startswith(prefix):
+                      if not info.filename.startswith(
+                          prefix
+                      ):
                           continue
 
-                      relative = info.filename[len(prefix):]
+                      relative = info.filename[
+                          len(prefix):
+                      ]
 
                       if not relative:
                           continue
 
-                      dest = output.joinpath(
+                      target = dest.joinpath(
                           *PurePosixPath(relative).parts
                       )
 
                       if info.is_dir():
-                          dest.mkdir(
+                          target.mkdir(
                               parents=True,
                               exist_ok=True
                           )
                       else:
-                          dest.parent.mkdir(
+                          target.parent.mkdir(
                               parents=True,
                               exist_ok=True
                           )
-
-                          with z.open(info) as source:
-                              with dest.open('wb') as target:
+                          with z.open(info) as src:
+                              with target.open("wb") as out:
                                   shutil.copyfileobj(
-                                      source, target
+                                      src, out
                                   )
 
-          required_files = (
-              'settings.gradle',
-              'app/build.gradle',
-              'tools/check_project.py',
-              'tools/test_physics.sh',
-              'tools/test_keyboard.sh'
+          if not is_project(dest):
+              sys.exit(
+                  "ERROR: Wrong or incomplete "
+                  "Android project"
+              )
+
+          required = (
+              "tools/test_keyboard.sh",
+              "tools/test_bluestacks_v095.py",
+              "tools/check_project.py"
           )
 
-          for required in required_files:
-              if not (output / required).is_file():
-                  sys.exit(
-                      f'::error::Incomplete game project: '
-                      f'missing {required}'
-                  )
+          for file in required:
+              if not (dest / file).is_file():
+                  sys.exit("Missing: " + file)
 
-          print(
-              'PASS: Correct v0.9.4 project ready'
-          )
+          print("PASS: v0.9.5 project ready")
           PY
 
-      - name: Set up Java 17
+      - name: Install Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle 8.13
+      - name: Install Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Set up Android SDK 36
-        uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Run project graphics physics and keyboard checks
+      - name: Run game regression tests
         working-directory: android-project
         shell: bash
         run: |
@@ -277,8 +241,9 @@ jobs:
           bash tools/test_rolling.sh
           bash tools/test_tilt.sh
           bash tools/test_keyboard.sh
+          python3 tools/test_bluestacks_v095.py
 
-      - name: Build Android APK
+      - name: Build ARM64 and x86_64 APK
         working-directory: android-project
         shell: bash
         run: |
@@ -288,45 +253,54 @@ jobs:
             :app:assembleDebug \
             2>&1 | tee gradle-build.log
 
-      - name: Verify APK is present and signed
+      - name: Verify APK compatibility
         shell: bash
         run: |
           set -euo pipefail
 
-          APK=android-project/app/build/outputs/apk/debug/app-debug.apk
+          APK="android-project/app/build/outputs/apk/debug/app-debug.apk"
 
           test -s "$APK"
-
           unzip -tq "$APK"
 
-          unzip -Z1 "$APK" > /tmp/marble-apk-files.txt
+          unzip -Z1 "$APK" > /tmp/apk-files.txt
 
-          grep -Fxq \
-            'lib/arm64-v8a/libfilament-jni.so' \
-            /tmp/marble-apk-files.txt
+          for arch in arm64-v8a x86_64; do
+            for lib in libfilament-jni.so libfilamat-jni.so; do
+              grep -Fxq \
+                "lib/$arch/$lib" \
+                /tmp/apk-files.txt || {
+                  echo "Missing: $arch/$lib"
+                  exit 1
+                }
+            done
+          done
 
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
             verify --verbose "$APK"
 
-          echo 'PASS: Compiled signed APK verified'
+          mkdir -p dist
 
-      - name: Upload installable APK
+          cp "$APK" \
+            dist/MARBLE_ATELIER_V095_BLUESTACKS.apk
+
+          echo "PASS: Universal APK verified"
+
+      - name: Upload BlueStacks APK
         uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_V094_WASD_APK
-          path: android-project/app/build/outputs/apk/debug/app-debug.apk
+          name: MARBLE_ATELIER_V095_BLUESTACKS_APK
+          path: dist/MARBLE_ATELIER_V095_BLUESTACKS.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build diagnostics
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_V094_BUILD_LOGS
+          name: MARBLE_ATELIER_V095_BUILD_LOGS
           path: |
             android-project/gradle-build.log
             android-project/app/build/reports/
-            android-project/app/build/outputs/logs/
           if-no-files-found: ignore
-          retention-days: 14
           
