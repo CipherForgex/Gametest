@@ -1,4 +1,5 @@
-name: Marble Atelier v0.9.6 - Samsung + BlueStacks APK
+
+name: Marble Atelier v0.21.0 Cinematic Gallery Test APK
 
 on:
   workflow_dispatch:
@@ -10,197 +11,128 @@ permissions:
 
 jobs:
   android:
-    name: Locate source, test, compile universal APK
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Locate v0.9.6 game source (ZIP name and folder independent)
+      - name: Locate and validate canonical source
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PYCODE'
           from pathlib import Path, PurePosixPath
-          from zipfile import ZipFile, BadZipFile
-          import shutil, stat, sys
+          import shutil, stat, zipfile
 
           repo = Path.cwd()
-          output = repo / 'android-project'
+          out = repo / 'android-project'
 
-          def expected(text):
-              return "versionName '0.9.6'" in text and 'versionCode 20' in text
-
-          def valid_project(root):
-              gradle = root / 'app/build.gradle'
-              return ((root / 'settings.gradle').is_file()
-                      and gradle.is_file()
-                      and expected(gradle.read_text(errors='replace')))
-
-          # Prefer extracted projects, including the repository root.
-          found = None
-          for gradle in sorted(repo.rglob('app/build.gradle')):
-              if '.git' in gradle.parts or 'android-project' in gradle.parts:
-                  continue
-              root = gradle.parent.parent
-              if valid_project(root):
-                  found = root
-                  break
-
-          if found is not None:
-              shutil.copytree(found, output, ignore=shutil.ignore_patterns(
-                  '.git', '.gradle', 'build', 'android-project'))
-              print('Found extracted v0.9.6 project at:', found.relative_to(repo))
+          if (repo / 'app/build.gradle').is_file():
+              shutil.copytree(
+                  repo,
+                  out,
+                  ignore=shutil.ignore_patterns(
+                      '.git', '.gradle', 'build', 'android-project'
+                  )
+              )
           else:
-              # The updated source ZIP may have any filename or folder.
-              chosen = None
-              for archive in sorted(repo.rglob('*.zip')):
-                  if '.git' in archive.parts or 'android-project' in archive.parts:
-                      continue
-                  try:
-                      with ZipFile(archive) as z:
-                          members = set(z.namelist())
-                          for name in members:
-                              if not name.endswith('app/build.gradle'):
-                                  continue
-                              prefix = name[:-len('app/build.gradle')]
-                              if prefix + 'settings.gradle' not in members:
-                                  continue
-                              if expected(z.read(name).decode('utf-8', 'replace')):
-                                  chosen = (archive, prefix)
-                                  break
-                  except (OSError, BadZipFile, ValueError, KeyError) as exc:
-                      print('Skipping invalid archive', archive, exc)
-                  if chosen:
-                      break
+              archive = repo / 'MARBLE_ATELIER_V0210_CINEMATIC_STUDIO.zip'
+              assert archive.is_file(), 'Upload MARBLE_ATELIER_V0210_CINEMATIC_STUDIO.zip to repository root'
 
-              if chosen is None:
-                  sys.exit('ERROR: No v0.9.6 build 20 source found. Upload '
-                      'the NEW MARBLE_ATELIER_V060_STUDIO.zip to the repository '
-                      'or commit its extracted Android files. The workflow alone '
-                      'does not contain the game source.')
+              with zipfile.ZipFile(archive) as z:
+                  assert z.testzip() is None, 'Corrupt source ZIP'
 
-              archive, prefix = chosen
-              print('Found source ZIP:', archive.relative_to(repo))
-              with ZipFile(archive) as z:
-                  if z.testzip() is not None:
-                      sys.exit('ERROR: ZIP integrity test failed')
                   for member in z.infolist():
-                      name = member.filename
-                      path = PurePosixPath(name)
-                      if (path.is_absolute() or '..' in path.parts
-                          or '\\' in name or ':' in name
-                          or stat.S_ISLNK(member.external_attr >> 16)):
-                          sys.exit('ERROR: Unsafe ZIP member: ' + name)
-                  output.mkdir()
-                  for member in z.infolist():
-                      if not member.filename.startswith(prefix):
-                          continue
-                      relative = member.filename[len(prefix):]
-                      if not relative:
-                          continue
-                      target = output.joinpath(*PurePosixPath(relative).parts)
-                      if member.is_dir():
-                          target.mkdir(parents=True, exist_ok=True)
-                      else:
-                          target.parent.mkdir(parents=True, exist_ok=True)
-                          with z.open(member) as src, target.open('wb') as dest:
-                              shutil.copyfileobj(src, dest)
+                      p = PurePosixPath(member.filename)
+                      assert not p.is_absolute() and '..' not in p.parts and ':' not in member.filename and '\\' not in member.filename
+                      assert not stat.S_ISLNK(member.external_attr >> 16), 'ZIP symlink rejected'
 
-          if not valid_project(output):
-              sys.exit('ERROR: Extracted Android project is invalid or wrong version')
-          required = [
-              'tools/check_project.py', 'tools/test_physics.sh',
-              'tools/test_keyboard.sh', 'tools/test_camera_v096.py', 'tools/test_bluestacks_v095.py',
-              'app/src/main/java/com/atelier/marble/EmulatorCompatibility.java'
-          ]
-          for relative in required:
-              if not (output / relative).is_file():
-                  sys.exit('ERROR: Incomplete v0.9.6 project; missing ' + relative)
-          print('PASS: Complete v0.9.6 BlueStacks/Samsung project located')
+                  z.extractall(out)
+
+          gradle = (out / 'app/build.gradle').read_text()
+
+          assert "versionName '0.21.0'" in gradle and 'versionCode 46' in gradle, 'Wrong source version'
+          assert (out / 'signing/atelier-development.keystore').is_file(), 'Missing stable test signing key'
           PYCODE
 
-      - name: Configure Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Configure Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Install Android SDK 36
-        uses: android-actions/setup-android@v4
+      - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
 
-      - name: Regression tests - twenty maps graphics and controls
+      - name: Compile all chapter shaders with matching Filament compiler
+        working-directory: android-project
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail https://github.com/google/filament/releases/download/v1.75.1/filament-v1.75.1-linux.tgz -o /tmp/filament-weather.tgz
+          echo "cff34ebbeddcef0df903c4318c0540b0da843e01262ff2e896692a6ee2b5c925  /tmp/filament-weather.tgz" | sha256sum -c -
+          mkdir -p /tmp/filament-weather
+          tar -xzf /tmp/filament-weather.tgz -C /tmp/filament-weather filament/bin/matc
+          MATC=/tmp/filament-weather/filament/bin/matc bash tools/compile_weather_shaders.sh
+
+      - name: Run source and executable regression tests
         working-directory: android-project
         shell: bash
         run: |
           set -euo pipefail
           python3 tools/check_project.py
-          bash tools/test_physics.sh
-          bash tools/test_graphics.sh
-          python3 tools/test_visual_upgrade.py
-          python3 tools/test_vnext_contracts.py
-          python3 tools/test_harbour_v093.py
-          python3 tools/test_camera_v096.py
-          bash tools/test_rolling.sh
-          bash tools/test_tilt.sh
-          bash tools/test_keyboard.sh
-          python3 tools/test_bluestacks_v095.py
+          for test in tools/test*.py; do python3 "$test"; done
+          for test in tools/test*.sh; do bash "$test"; done
 
-      - name: Compile universal ARM64 plus x86_64 debug APK
+      - name: Compile and lint
         working-directory: android-project
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace :app:assembleDebug 2>&1 | tee gradle-build.log
+          gradle --no-daemon --stacktrace :app:assembleDebug :app:lintDebug 2>&1 | tee gradle-build.log
 
-      - name: Verify both native architectures and APK signature
+      - name: Verify signed APK and both native architectures
         shell: bash
         run: |
           set -euo pipefail
-          APK='android-project/app/build/outputs/apk/debug/app-debug.apk'
-          test -s "$APK"
+          APK=android-project/app/build/outputs/apk/debug/app-debug.apk
+
           unzip -tq "$APK"
-          unzip -Z1 "$APK" > /tmp/marble-apk-files.txt
+          unzip -Z1 "$APK" > /tmp/apk-files.txt
+
           for arch in arm64-v8a x86_64; do
-            for library in libfilament-jni.so libfilamat-jni.so; do
-              grep -Fxq "lib/$arch/$library" /tmp/marble-apk-files.txt || {
-                echo "ERROR: Missing native library $arch/$library"
-                exit 1
-              }
+            for lib in libfilament-jni.so libfilamat-jni.so; do
+              grep -Fxq "lib/$arch/$lib" /tmp/apk-files.txt
             done
           done
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$APK"
+
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs "$APK"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 4 "$APK"
+
           mkdir -p dist
-          cp "$APK" dist/MARBLE_ATELIER_V096_SAMSUNG_BLUESTACKS.apk
-          echo 'PASS: Universal signed APK includes ARM64 + x86_64 Filament and Filamat'
+          cp "$APK" dist/MARBLE_ATELIER_V0210_TEST.apk
+          sha256sum dist/MARBLE_ATELIER_V0210_TEST.apk > dist/SHA256.txt
 
-      - name: Upload installable APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_V096_SAMSUNG_BLUESTACKS_APK
-          path: dist/MARBLE_ATELIER_V096_SAMSUNG_BLUESTACKS.apk
+          name: MARBLE_ATELIER_V0210_TEST_APK
+          path: dist/
           if-no-files-found: error
-          retention-days: 14
 
-      - name: Upload build diagnostics
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: MARBLE_ATELIER_V096_BUILD_LOGS
+          name: MARBLE_ATELIER_V0210_QA_LOGS
           path: |
             android-project/gradle-build.log
             android-project/app/build/reports/
-            android-project/app/build/outputs/logs/
+            android-project/handover/v0210/
           if-no-files-found: ignore
-          retention-days: 14
+          
